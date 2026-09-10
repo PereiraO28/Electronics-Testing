@@ -1,0 +1,4 @@
+pip3 install smbus2
+sudo apt install python3-smbus2
+sudo apt install i2c-tools
+i2cdetect -y 1
