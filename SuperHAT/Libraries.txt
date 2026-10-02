@@ -2,6 +2,7 @@ Install these libraries:
 sudo apt update
 sudo apt install python3-smbus python3-gpiozero python3-lgpio i2c-tools
 pip3 install smbus2
+pip3 install adafruit-circuitpython-ads1x15
 
 To run:
 sudo python3 Main-Test.py
