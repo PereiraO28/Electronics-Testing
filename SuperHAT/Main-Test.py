@@ -2,24 +2,22 @@
 
 import curses
 import time
-from smbus2 import SMBus
+
+# GPIO
 from gpiozero import DigitalInputDevice, DigitalOutputDevice, PWMOutputDevice
+
+# I2C / ADS1015
+import board
+import busio
+from adafruit_ads1x15 import ADS1015, AnalogIn, ads1x15
+
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
-I2C_BUS = 1
-INA3221_ADDRESS = 0x40
+# ---------------- GPIO ----------------
 
-# INA3221 channels
-# CH1 = 5 V
-# CH2 = 12 V
-# CH3 = 3.3 V
-
-SHUNT_OHMS = 0.1  # Change to match your PCB
-
-# GPIO assignments (BCM numbering)
 LEAK_GPIO = 26
 
 DRV_IN1 = 9
@@ -34,56 +32,163 @@ MOSFET3_GPIO = 18
 MOSFET4_GPIO = 19
 
 
-# ============================================================
-# INA3221
-# ============================================================
+# ---------------- ADS1015 ----------------
 
-class INA3221:
-    """
-    Minimal INA3221 driver for reading bus voltage.
-    """
+VOLTAGE_ADC_ADDRESS = 0x4A
+LEFT_THRUSTER_ADC_ADDRESS = 0x48
+RIGHT_THRUSTER_ADC_ADDRESS = 0x49
 
-    # Bus voltage registers
-    BUS_REG = {
-        1: 0x02,
-        2: 0x04,
-        3: 0x06,
-    }
 
-    def __init__(self, bus_num=1, address=0x40):
-        self.bus = SMBus(bus_num)
-        self.address = address
+# ---------------- Scaling ----------------
+#
+# These values are taken directly from your existing ROV code.
 
-    def read_word(self, register):
-        raw = self.bus.read_word_data(self.address, register)
+SCALAR_48V = 19.8
+SCALAR_12V = 5.273
+SCALAR_3V3 = 2.0
 
-        # SMBus returns bytes swapped for this device
-        raw = ((raw & 0xFF) << 8) | ((raw >> 8) & 0xFF)
-
-        return raw
-
-    def read_bus_voltage(self, channel):
-        raw = self.read_word(self.BUS_REG[channel])
-
-        # INA3221 bus-voltage register:
-        # bits 15:3 contain the measurement
-        value = (raw >> 3) & 0x1FFF
-
-        # 8 mV per bit
-        return value * 0.008
-
-    def close(self):
-        self.bus.close()
+SCALAR_CURRENT = 6.061
 
 
 # ============================================================
-# HARDWARE SETUP
+# POWERBOARD MONITOR
+# ============================================================
+
+class PowerBoardMonitor:
+
+    def __init__(self):
+
+        # Initialize Raspberry Pi I2C
+        self.i2c = busio.I2C(board.SCL, board.SDA)
+
+        # ----------------------------------------------------
+        # Voltage ADC - 0x4A
+        # ----------------------------------------------------
+
+        self.voltage_adc = ADS1015(
+            self.i2c,
+            address=VOLTAGE_ADC_ADDRESS
+        )
+
+        self.voltage_channels = [
+            AnalogIn(self.voltage_adc, ads1x15.Pin.A0),
+            AnalogIn(self.voltage_adc, ads1x15.Pin.A1),
+            AnalogIn(self.voltage_adc, ads1x15.Pin.A2),
+            AnalogIn(self.voltage_adc, ads1x15.Pin.A3),
+        ]
+
+        # ----------------------------------------------------
+        # Left Thruster Current ADC - 0x48
+        # ----------------------------------------------------
+
+        self.left_adc = ADS1015(
+            self.i2c,
+            address=LEFT_THRUSTER_ADC_ADDRESS
+        )
+
+        self.left_channels = [
+            AnalogIn(self.left_adc, ads1x15.Pin.A0),
+            AnalogIn(self.left_adc, ads1x15.Pin.A1),
+            AnalogIn(self.left_adc, ads1x15.Pin.A2),
+            AnalogIn(self.left_adc, ads1x15.Pin.A3),
+        ]
+
+        # ----------------------------------------------------
+        # Right Thruster Current ADC - 0x49
+        # ----------------------------------------------------
+
+        self.right_adc = ADS1015(
+            self.i2c,
+            address=RIGHT_THRUSTER_ADC_ADDRESS
+        )
+
+        self.right_channels = [
+            AnalogIn(self.right_adc, ads1x15.Pin.A0),
+            AnalogIn(self.right_adc, ads1x15.Pin.A1),
+            AnalogIn(self.right_adc, ads1x15.Pin.A2),
+            AnalogIn(self.right_adc, ads1x15.Pin.A3),
+        ]
+
+    # ========================================================
+    # VOLTAGE READINGS
+    # ========================================================
+
+    def read_voltages(self):
+
+        return {
+            "48V": (
+                self.voltage_channels[0].voltage
+                * SCALAR_48V
+            ),
+
+            "12V_LEFT": (
+                self.voltage_channels[1].voltage
+                * SCALAR_12V
+            ),
+
+            "12V_RIGHT": (
+                self.voltage_channels[2].voltage
+                * SCALAR_12V
+            ),
+
+            "3V3": (
+                self.voltage_channels[3].voltage
+                * SCALAR_3V3
+            ),
+        }
+
+    # ========================================================
+    # CURRENT READINGS
+    # ========================================================
+
+    def read_thruster_currents(self):
+
+        # Existing powerboard mapping:
+        #
+        # Thruster physical arrangement:
+        #
+        #       1   2
+        #       5   6
+        #       7   8
+        #       3   4
+        #
+        #
+        # ADS 0x48:
+        #
+        # A0 -> Thruster 1
+        # A1 -> Thruster 5
+        # A2 -> Thruster 7
+        # A3 -> Thruster 3
+        #
+        #
+        # ADS 0x49:
+        #
+        # A0 -> Thruster 2
+        # A1 -> Thruster 6
+        # A2 -> Thruster 8
+        # A3 -> Thruster 4
+
+        return {
+            1: self.left_channels[0].voltage * SCALAR_CURRENT,
+            2: self.right_channels[0].voltage * SCALAR_CURRENT,
+
+            3: self.left_channels[3].voltage * SCALAR_CURRENT,
+            4: self.right_channels[3].voltage * SCALAR_CURRENT,
+
+            5: self.left_channels[1].voltage * SCALAR_CURRENT,
+            6: self.right_channels[1].voltage * SCALAR_CURRENT,
+
+            7: self.left_channels[2].voltage * SCALAR_CURRENT,
+            8: self.right_channels[2].voltage * SCALAR_CURRENT,
+        }
+
+
+# ============================================================
+# GPIO HARDWARE SETUP
 # ============================================================
 
 def setup_hardware():
 
-    # Leak sensor
-    # Change pull_up depending on your SOS sensor circuitry.
     leak = DigitalInputDevice(
         LEAK_GPIO,
         pull_up=False
@@ -93,9 +198,16 @@ def setup_hardware():
     motor_in1 = DigitalOutputDevice(DRV_IN1)
     motor_in2 = DigitalOutputDevice(DRV_IN2)
 
-    # PWM outputs
-    pwm1 = PWMOutputDevice(PWM1_GPIO, frequency=1000)
-    pwm2 = PWMOutputDevice(PWM2_GPIO, frequency=1000)
+    # PWM
+    pwm1 = PWMOutputDevice(
+        PWM1_GPIO,
+        frequency=1000
+    )
+
+    pwm2 = PWMOutputDevice(
+        PWM2_GPIO,
+        frequency=1000
+    )
 
     # MOSFETs
     mosfet1 = DigitalOutputDevice(MOSFET1_GPIO)
@@ -104,6 +216,7 @@ def setup_hardware():
     mosfet4 = DigitalOutputDevice(MOSFET4_GPIO)
 
     return {
+
         "leak": leak,
 
         "motor_in1": motor_in1,
@@ -120,11 +233,15 @@ def setup_hardware():
 
 
 # ============================================================
-# OUTPUT HELPERS
+# STATUS HELPERS
 # ============================================================
 
 def on_off(value):
-    return "ON" if value else "OFF"
+
+    if value:
+        return "ON"
+
+    return "OFF"
 
 
 def motor_direction(hw):
@@ -141,8 +258,7 @@ def motor_direction(hw):
     elif not in1 and not in2:
         return "STOPPED"
 
-    else:
-        return "BRAKE"
+    return "BRAKE"
 
 
 def motor_status(hw):
@@ -172,46 +288,92 @@ def reset_outputs(hw):
 
 
 # ============================================================
-# TERMINAL DISPLAY
+# SAFE TERMINAL WRITE
 # ============================================================
 
-def draw_screen(stdscr, hw, ina, leak_enabled):
+def write_line(stdscr, y, text):
+
+    try:
+        height, width = stdscr.getmaxyx()
+
+        if y >= height:
+            return
+
+        stdscr.addstr(
+            y,
+            0,
+            text[:width - 1]
+        )
+
+    except curses.error:
+        pass
+
+
+# ============================================================
+# DRAW SCREEN
+# ============================================================
+
+def draw_screen(
+    stdscr,
+    hw,
+    powerboard,
+    leak_enabled
+):
 
     stdscr.erase()
 
-    # --------------------------------------------------------
-    # Read voltages
-    # --------------------------------------------------------
+    # ========================================================
+    # SENSOR READINGS
+    # ========================================================
+
+    voltage_error = None
+    current_error = None
 
     try:
-        voltage_5v = ina.read_bus_voltage(1)
-        voltage_12v = ina.read_bus_voltage(2)
-        voltage_3v3 = ina.read_bus_voltage(3)
-
-        voltage_string = (
-            f"Voltage(3.3V: {voltage_3v3:.3f} V, "
-            f"5V: {voltage_5v:.3f} V, "
-            f"12V: {voltage_12v:.3f} V)"
-        )
+        voltages = powerboard.read_voltages()
 
     except Exception as e:
-        voltage_string = f"Voltage: INA3221 ERROR ({e})"
 
-    # --------------------------------------------------------
+        voltage_error = str(e)
+
+        voltages = {
+            "48V": 0,
+            "12V_LEFT": 0,
+            "12V_RIGHT": 0,
+            "3V3": 0,
+        }
+
+    try:
+        currents = powerboard.read_thruster_currents()
+
+    except Exception as e:
+
+        current_error = str(e)
+
+        currents = {
+            i: 0
+            for i in range(1, 9)
+        }
+
     # Leak sensor
-    # --------------------------------------------------------
-
     if leak_enabled:
         leak_status = bool(hw["leak"].value)
+
     else:
         leak_status = False
 
-    # --------------------------------------------------------
-    # Diagram
-    # --------------------------------------------------------
+    # ========================================================
+    # INTERFACE
+    # ========================================================
 
     lines = [
+
         "",
+
+        "===================== ROV ELECTRONICS TEST =====================",
+
+        "",
+
         "             ------------        ------------",
         "-----        | MOSFET1 |        | MOSFET2 |        -----",
         "|   |        ------------        ------------        |   |",
@@ -219,42 +381,126 @@ def draw_screen(stdscr, hw, ina, leak_enabled):
         "|   |        ------------        ------------        |   |",
         "-----        | MOSFET3 |        | MOSFET4 |        -----",
         "             ------------        ------------",
+
         "",
-        voltage_string,
+
+        "-------------------- SUPERHAT POWER BUSES --------------------",
+
         "",
+
+        f"3.3V Bus : {voltages['3V3']:6.3f} V",
+        f"5V Bus   : SuperHAT sensing not configured",
+        f"12V Bus  : SuperHAT sensing not configured",
+
+        "",
+
         f"Leak Status: {leak_status}",
-        '(Toggle on/off with "w")',
+        '(Toggle leak monitoring with "w")',
+
         "",
+
+        "---------------------- POWERBOARD ----------------------------",
+
+        "",
+
+        "Power Rails:",
+
+        f"48V       : {voltages['48V']:7.3f} V",
+        f"12V Left  : {voltages['12V_LEFT']:7.3f} V",
+        f"12V Right : {voltages['12V_RIGHT']:7.3f} V",
+        f"3.3V      : {voltages['3V3']:7.3f} V",
+
+        "",
+
+        "Thruster Current:",
+
+        f"Thruster 1 : {currents[1]:6.2f} A      "
+        f"Thruster 2 : {currents[2]:6.2f} A",
+
+        f"Thruster 5 : {currents[5]:6.2f} A      "
+        f"Thruster 6 : {currents[6]:6.2f} A",
+
+        f"Thruster 7 : {currents[7]:6.2f} A      "
+        f"Thruster 8 : {currents[8]:6.2f} A",
+
+        f"Thruster 3 : {currents[3]:6.2f} A      "
+        f"Thruster 4 : {currents[4]:6.2f} A",
+
+        "",
+
+        "----------------------- OUTPUT TESTS -------------------------",
+
+        "",
+
         f"Motor Driver Status: {motor_status(hw)}",
-        '(Click "a" for clockwise and "s" for counter-clockwise)',
+
+        '(Press "a" for clockwise)',
+        '(Press "s" for counter-clockwise)',
+
         f"Motor Driver Direction: {motor_direction(hw)}",
+
         "",
+
         '(Toggle PWM1 with "d")',
         f"PWM1 Status: {on_off(hw['pwm1'].value > 0)}",
+
         "",
+
         '(Toggle PWM2 with "f")',
         f"PWM2 Status: {on_off(hw['pwm2'].value > 0)}",
+
         "",
+
         '(Toggle MOSFET1 with "g")',
         f"MOSFET1 Status: {on_off(hw['mosfet1'].value)}",
+
         "",
+
         '(Toggle MOSFET2 with "h")',
         f"MOSFET2 Status: {on_off(hw['mosfet2'].value)}",
+
         "",
+
         '(Toggle MOSFET3 with "j")',
         f"MOSFET3 Status: {on_off(hw['mosfet3'].value)}",
+
         "",
+
         '(Toggle MOSFET4 with "k")',
         f"MOSFET4 Status: {on_off(hw['mosfet4'].value)}",
+
         "",
-        'Click "q" to quit or "r" to reset values',
+
+        'Press "q" to quit or "r" to reset outputs',
+
     ]
 
+    # ========================================================
+    # ERRORS
+    # ========================================================
+
+    if voltage_error:
+
+        lines += [
+            "",
+            "POWERBOARD VOLTAGE ERROR:",
+            voltage_error,
+        ]
+
+    if current_error:
+
+        lines += [
+            "",
+            "POWERBOARD CURRENT ERROR:",
+            current_error,
+        ]
+
+    # ========================================================
+    # WRITE SCREEN
+    # ========================================================
+
     for y, line in enumerate(lines):
-        try:
-            stdscr.addstr(y, 0, line)
-        except curses.error:
-            pass
+        write_line(stdscr, y, line)
 
     stdscr.refresh()
 
@@ -267,14 +513,20 @@ def main(stdscr):
 
     curses.curs_set(0)
 
-    # Don't block waiting for keyboard input
     stdscr.nodelay(True)
-
-    # Refresh keyboard roughly every 50 ms
     stdscr.timeout(50)
 
+    # --------------------------------------------------------
+    # Initialize GPIO
+    # --------------------------------------------------------
+
     hw = setup_hardware()
-    ina = INA3221(I2C_BUS, INA3221_ADDRESS)
+
+    # --------------------------------------------------------
+    # Initialize PowerBoard
+    # --------------------------------------------------------
+
+    powerboard = PowerBoardMonitor()
 
     leak_enabled = True
 
@@ -287,7 +539,7 @@ def main(stdscr):
             draw_screen(
                 stdscr,
                 hw,
-                ina,
+                powerboard,
                 leak_enabled
             )
 
@@ -298,109 +550,140 @@ def main(stdscr):
 
             try:
                 key = chr(key).lower()
+
             except ValueError:
                 continue
 
-            # --------------------------------------------
-            # Quit
-            # --------------------------------------------
+            # =================================================
+            # QUIT
+            # =================================================
 
             if key == "q":
                 break
 
-            # --------------------------------------------
-            # Reset
-            # --------------------------------------------
+            # =================================================
+            # RESET
+            # =================================================
 
             elif key == "r":
+
                 reset_outputs(hw)
+
                 leak_enabled = True
 
-            # --------------------------------------------
-            # Leak sensor
-            # --------------------------------------------
+            # =================================================
+            # LEAK SENSOR MONITOR
+            # =================================================
 
             elif key == "w":
+
                 leak_enabled = not leak_enabled
 
-            # --------------------------------------------
-            # Motor
-            # --------------------------------------------
+            # =================================================
+            # MOTOR CLOCKWISE
+            # =================================================
 
             elif key == "a":
 
-                # Toggle clockwise
                 if (
                     hw["motor_in1"].value == 1
-                    and hw["motor_in2"].value == 0
+                    and
+                    hw["motor_in2"].value == 0
                 ):
+
+                    # Already CW -> stop
                     hw["motor_in1"].off()
                     hw["motor_in2"].off()
 
                 else:
+
                     hw["motor_in1"].on()
                     hw["motor_in2"].off()
 
+            # =================================================
+            # MOTOR COUNTER-CLOCKWISE
+            # =================================================
+
             elif key == "s":
 
-                # Toggle counter-clockwise
                 if (
                     hw["motor_in1"].value == 0
-                    and hw["motor_in2"].value == 1
+                    and
+                    hw["motor_in2"].value == 1
                 ):
+
+                    # Already CCW -> stop
                     hw["motor_in1"].off()
                     hw["motor_in2"].off()
 
                 else:
+
                     hw["motor_in1"].off()
                     hw["motor_in2"].on()
 
-            # --------------------------------------------
-            # PWM
-            # --------------------------------------------
+            # =================================================
+            # PWM 1
+            # =================================================
 
             elif key == "d":
 
                 if hw["pwm1"].value > 0:
+
                     hw["pwm1"].off()
+
                 else:
-                    # 100% duty cycle for simple output test
+
                     hw["pwm1"].value = 1.0
+
+            # =================================================
+            # PWM 2
+            # =================================================
 
             elif key == "f":
 
                 if hw["pwm2"].value > 0:
+
                     hw["pwm2"].off()
+
                 else:
+
                     hw["pwm2"].value = 1.0
 
-            # --------------------------------------------
-            # MOSFETs
-            # --------------------------------------------
+            # =================================================
+            # MOSFETS
+            # =================================================
 
             elif key == "g":
+
                 hw["mosfet1"].toggle()
 
             elif key == "h":
+
                 hw["mosfet2"].toggle()
 
             elif key == "j":
+
                 hw["mosfet3"].toggle()
 
             elif key == "k":
+
                 hw["mosfet4"].toggle()
+
+    # ========================================================
+    # EMERGENCY CLEANUP
+    # ========================================================
 
     finally:
 
-        # VERY IMPORTANT:
-        # turn everything off if program exits/crashes
-
         reset_outputs(hw)
 
-        ina.close()
-
         for device in hw.values():
-            device.close()
+
+            try:
+                device.close()
+
+            except Exception:
+                pass
 
 
 # ============================================================
@@ -408,4 +691,5 @@ def main(stdscr):
 # ============================================================
 
 if __name__ == "__main__":
+
     curses.wrapper(main)
