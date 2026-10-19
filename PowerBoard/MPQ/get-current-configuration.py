@@ -1,4 +1,4 @@
-from smbus import SMBus
+from smbus2 import SMBus
 
 BUS_NUMBER = 1
 MPQ_ADDRESS = 0x6a  # Replace with actual address
