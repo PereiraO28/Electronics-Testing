@@ -1,7 +1,7 @@
 from smbus import SMBus
 
 BUS_NUMBER = 1
-MPQ_ADDRESS = 0x60  # Replace with actual address
+MPQ_ADDRESS = 0x6a  # Replace with actual address
 
 with SMBus(BUS_NUMBER) as bus:
 
