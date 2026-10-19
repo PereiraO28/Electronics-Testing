@@ -1,6 +1,6 @@
 from smbus2 import SMBus
 
-ADDRESS = 0x60  # Replace with actual PMBus address
+ADDRESS = 0x61  # Replace with actual PMBus address
 
 with SMBus(1) as bus:
     # Read current soft-start setting
