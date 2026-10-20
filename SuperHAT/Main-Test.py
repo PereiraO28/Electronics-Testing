@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import curses
 import time
 
@@ -11,12 +9,10 @@ import board
 import busio
 from adafruit_ads1x15 import ADS1015, AnalogIn, ads1x15
 
+#PMBus on MPQ Murata power converters
+from smbus2 import SMBus
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
-# ---------------- GPIO ----------------
+# GPIO
 
 LEAK_GPIO = 26
 
@@ -32,16 +28,14 @@ MOSFET3_GPIO = 18
 MOSFET4_GPIO = 19
 
 
-# ---------------- ADS1015 ----------------
+# ADS
 
 VOLTAGE_ADC_ADDRESS = 0x4A
 LEFT_THRUSTER_ADC_ADDRESS = 0x48
 RIGHT_THRUSTER_ADC_ADDRESS = 0x49
 
 
-# ---------------- Scaling ----------------
-#
-# These values are taken directly from your existing ROV code.
+# Scalars for voltage sensing
 
 SCALAR_48V = 19.8
 SCALAR_12V = 5.273
@@ -49,10 +43,7 @@ SCALAR_3V3 = 2.0
 
 SCALAR_CURRENT = 6.061
 
-
-# ============================================================
-# POWERBOARD MONITOR
-# ============================================================
+# Powerboard monitoring
 
 class PowerBoardMonitor:
 
@@ -61,9 +52,8 @@ class PowerBoardMonitor:
         # Initialize Raspberry Pi I2C
         self.i2c = busio.I2C(board.SCL, board.SDA)
 
-        # ----------------------------------------------------
-        # Voltage ADC - 0x4A
-        # ----------------------------------------------------
+        # Voltage ADC
+        # I2C Adress:0x4a
 
         self.voltage_adc = ADS1015(
             self.i2c,
@@ -77,9 +67,8 @@ class PowerBoardMonitor:
             AnalogIn(self.voltage_adc, ads1x15.Pin.A3),
         ]
 
-        # ----------------------------------------------------
-        # Left Thruster Current ADC - 0x48
-        # ----------------------------------------------------
+        # Left Thruster Current ADC
+        # Address: 0x48
 
         self.left_adc = ADS1015(
             self.i2c,
@@ -93,9 +82,8 @@ class PowerBoardMonitor:
             AnalogIn(self.left_adc, ads1x15.Pin.A3),
         ]
 
-        # ----------------------------------------------------
-        # Right Thruster Current ADC - 0x49
-        # ----------------------------------------------------
+        # Right Thruster Current ADC 
+        #Address: 0x49
 
         self.right_adc = ADS1015(
             self.i2c,
@@ -109,9 +97,7 @@ class PowerBoardMonitor:
             AnalogIn(self.right_adc, ads1x15.Pin.A3),
         ]
 
-    # ========================================================
-    # VOLTAGE READINGS
-    # ========================================================
+    # Voltage Readings
 
     def read_voltages(self):
 
@@ -137,36 +123,32 @@ class PowerBoardMonitor:
             ),
         }
 
-    # ========================================================
-    # CURRENT READINGS
-    # ========================================================
+    # Current Readings
 
     def read_thruster_currents(self):
 
-        # Existing powerboard mapping:
+
+        # ESC Arrangments:
         #
-        # Thruster physical arrangement:
-        #
-        #       1   2
-        #       5   6
-        #       7   8
-        #       3   4
-        #
-        #
+        #       1       2
+        #       5       6
+        #       7       8
+        #       3       4
+
+
+
+        
         # ADS 0x48:
-        #
-        # A0 -> Thruster 1
-        # A1 -> Thruster 5
-        # A2 -> Thruster 7
-        # A3 -> Thruster 3
-        #
-        #
+        # A0 - Thruster 1
+        # A1 - Thruster 5
+        # A2 - Thruster 7
+        # A3 - Thruster 3
+
         # ADS 0x49:
-        #
-        # A0 -> Thruster 2
-        # A1 -> Thruster 6
-        # A2 -> Thruster 8
-        # A3 -> Thruster 4
+        # A0 - Thruster 2
+        # A1 - Thruster 6
+        # A2 - Thruster 8
+        # A3 - Thruster 4
 
         return {
             1: self.left_channels[0].voltage * SCALAR_CURRENT,
@@ -183,9 +165,7 @@ class PowerBoardMonitor:
         }
 
 
-# ============================================================
-# GPIO HARDWARE SETUP
-# ============================================================
+# GPIO Setup
 
 def setup_hardware():
 
@@ -194,7 +174,7 @@ def setup_hardware():
         pull_up=False
     )
 
-    # DRV8871
+    # DRV8871 Motor Driver
     motor_in1 = DigitalOutputDevice(DRV_IN1)
     motor_in2 = DigitalOutputDevice(DRV_IN2)
 
@@ -232,9 +212,8 @@ def setup_hardware():
     }
 
 
-# ============================================================
-# STATUS HELPERS
-# ============================================================
+
+# Status Indicators
 
 def on_off(value):
 
@@ -269,9 +248,7 @@ def motor_status(hw):
     return "OFF"
 
 
-# ============================================================
-# RESET
-# ============================================================
+# Reset
 
 def reset_outputs(hw):
 
@@ -286,10 +263,6 @@ def reset_outputs(hw):
     hw["mosfet3"].off()
     hw["mosfet4"].off()
 
-
-# ============================================================
-# SAFE TERMINAL WRITE
-# ============================================================
 
 def write_line(stdscr, y, text):
 
@@ -309,9 +282,6 @@ def write_line(stdscr, y, text):
         pass
 
 
-# ============================================================
-# DRAW SCREEN
-# ============================================================
 
 def draw_screen(
     stdscr,
@@ -322,9 +292,6 @@ def draw_screen(
 
     stdscr.erase()
 
-    # ========================================================
-    # SENSOR READINGS
-    # ========================================================
 
     voltage_error = None
     current_error = None
@@ -362,9 +329,7 @@ def draw_screen(
     else:
         leak_status = False
 
-    # ========================================================
-    # INTERFACE
-    # ========================================================
+    #Terminal Interface:
 
     lines = [
 
@@ -475,9 +440,8 @@ def draw_screen(
 
     ]
 
-    # ========================================================
-    # ERRORS
-    # ========================================================
+    
+    # Error display
 
     if voltage_error:
 
@@ -495,19 +459,11 @@ def draw_screen(
             current_error,
         ]
 
-    # ========================================================
-    # WRITE SCREEN
-    # ========================================================
-
     for y, line in enumerate(lines):
         write_line(stdscr, y, line)
 
     stdscr.refresh()
 
-
-# ============================================================
-# MAIN
-# ============================================================
 
 def main(stdscr):
 
@@ -516,15 +472,11 @@ def main(stdscr):
     stdscr.nodelay(True)
     stdscr.timeout(50)
 
-    # --------------------------------------------------------
     # Initialize GPIO
-    # --------------------------------------------------------
 
     hw = setup_hardware()
 
-    # --------------------------------------------------------
     # Initialize PowerBoard
-    # --------------------------------------------------------
 
     powerboard = PowerBoardMonitor()
 
@@ -554,16 +506,12 @@ def main(stdscr):
             except ValueError:
                 continue
 
-            # =================================================
-            # QUIT
-            # =================================================
+            # Quit
 
             if key == "q":
                 break
 
-            # =================================================
-            # RESET
-            # =================================================
+            # Reset
 
             elif key == "r":
 
@@ -571,17 +519,13 @@ def main(stdscr):
 
                 leak_enabled = True
 
-            # =================================================
-            # LEAK SENSOR MONITOR
-            # =================================================
+            # Leak Sensors
 
             elif key == "w":
 
                 leak_enabled = not leak_enabled
 
-            # =================================================
-            # MOTOR CLOCKWISE
-            # =================================================
+            # Motor Direction
 
             elif key == "a":
 
@@ -600,9 +544,6 @@ def main(stdscr):
                     hw["motor_in1"].on()
                     hw["motor_in2"].off()
 
-            # =================================================
-            # MOTOR COUNTER-CLOCKWISE
-            # =================================================
 
             elif key == "s":
 
@@ -621,9 +562,7 @@ def main(stdscr):
                     hw["motor_in1"].off()
                     hw["motor_in2"].on()
 
-            # =================================================
             # PWM 1
-            # =================================================
 
             elif key == "d":
 
@@ -635,9 +574,7 @@ def main(stdscr):
 
                     hw["pwm1"].value = 1.0
 
-            # =================================================
             # PWM 2
-            # =================================================
 
             elif key == "f":
 
@@ -649,9 +586,7 @@ def main(stdscr):
 
                     hw["pwm2"].value = 1.0
 
-            # =================================================
             # MOSFETS
-            # =================================================
 
             elif key == "g":
 
@@ -669,9 +604,7 @@ def main(stdscr):
 
                 hw["mosfet4"].toggle()
 
-    # ========================================================
     # EMERGENCY CLEANUP
-    # ========================================================
 
     finally:
 
@@ -686,9 +619,7 @@ def main(stdscr):
                 pass
 
 
-# ============================================================
 # START
-# ============================================================
 
 if __name__ == "__main__":
 
