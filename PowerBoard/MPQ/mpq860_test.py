@@ -11,7 +11,7 @@ import argparse
 import csv
 import time
 from datetime import datetime
-from smbus import SMBus
+from smbus2 import SMBus
 
 # (name, command, SMBus type, decoding, unit)
 # "raw" means the register is reported without interpretation.
