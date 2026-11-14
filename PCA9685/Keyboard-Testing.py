@@ -30,7 +30,7 @@ ALLCALL = 0x01
 
 # ---- Configuration ----
 I2C_BUS = 1
-I2C_ADDRESS = 0x40
+I2C_ADDRESS = 0x5c
 PWM_FREQUENCY = 50
 
 NEUTRAL_US = 1500
