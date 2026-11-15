@@ -46,123 +46,96 @@ SCALAR_CURRENT = 6.061
 # Powerboard monitoring
 
 class PowerBoardMonitor:
+    RETRY_INTERVAL = 3.0  # Seconds between reconnect attempts
 
     def __init__(self):
+        self.i2c = None
+        self.channels = {addr: None for addr in (
+            VOLTAGE_ADC_ADDRESS, LEFT_THRUSTER_ADC_ADDRESS,
+            RIGHT_THRUSTER_ADC_ADDRESS
+        )}
+        self.last_attempt = {addr: -float("inf") for addr in self.channels}
+        self.errors = {}
+        try:
+            self.i2c = busio.I2C(board.SCL, board.SDA)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.errors["bus"] = str(exc)
 
-        # Initialize Raspberry Pi I2C
-        self.i2c = busio.I2C(board.SCL, board.SDA)
+    def _connect(self, address):
+        if self.channels[address] is not None:
+            return
+        now = time.monotonic()
+        if now - self.last_attempt[address] < self.RETRY_INTERVAL:
+            return
+        self.last_attempt[address] = now
+        if self.i2c is None:
+            try:
+                self.i2c = busio.I2C(board.SCL, board.SDA)
+                self.errors.pop("bus", None)
+            except (OSError, RuntimeError, ValueError) as exc:
+                self.errors["bus"] = str(exc)
+                return
+        try:
+            adc = ADS1015(self.i2c, address=address)
+            channels = [AnalogIn(adc, pin) for pin in (
+                ads1x15.Pin.A0, ads1x15.Pin.A1,
+                ads1x15.Pin.A2, ads1x15.Pin.A3
+            )]
+            # Verify the device responds, not just that the object was created.
+            _ = channels[0].voltage
+            self.channels[address] = channels
+            self.errors.pop(address, None)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.channels[address] = None
+            self.errors[address] = str(exc)
 
-        # Voltage ADC
-        # I2C Adress:0x4a
-
-        self.voltage_adc = ADS1015(
-            self.i2c,
-            address=VOLTAGE_ADC_ADDRESS
-        )
-
-        self.voltage_channels = [
-            AnalogIn(self.voltage_adc, ads1x15.Pin.A0),
-            AnalogIn(self.voltage_adc, ads1x15.Pin.A1),
-            AnalogIn(self.voltage_adc, ads1x15.Pin.A2),
-            AnalogIn(self.voltage_adc, ads1x15.Pin.A3),
-        ]
-
-        # Left Thruster Current ADC
-        # Address: 0x48
-
-        self.left_adc = ADS1015(
-            self.i2c,
-            address=LEFT_THRUSTER_ADC_ADDRESS
-        )
-
-        self.left_channels = [
-            AnalogIn(self.left_adc, ads1x15.Pin.A0),
-            AnalogIn(self.left_adc, ads1x15.Pin.A1),
-            AnalogIn(self.left_adc, ads1x15.Pin.A2),
-            AnalogIn(self.left_adc, ads1x15.Pin.A3),
-        ]
-
-        # Right Thruster Current ADC 
-        #Address: 0x49
-
-        self.right_adc = ADS1015(
-            self.i2c,
-            address=RIGHT_THRUSTER_ADC_ADDRESS
-        )
-
-        self.right_channels = [
-            AnalogIn(self.right_adc, ads1x15.Pin.A0),
-            AnalogIn(self.right_adc, ads1x15.Pin.A1),
-            AnalogIn(self.right_adc, ads1x15.Pin.A2),
-            AnalogIn(self.right_adc, ads1x15.Pin.A3),
-        ]
-
-    # Voltage Readings
+    def _read(self, address, channel, scalar):
+        self._connect(address)
+        channels = self.channels[address]
+        if channels is None:
+            return None
+        try:
+            result = channels[channel].voltage * scalar
+            self.errors.pop(address, None)
+            return result
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.channels[address] = None
+            self.errors[address] = str(exc)
+            self.last_attempt[address] = time.monotonic()
+            return None
 
     def read_voltages(self):
-
+        a = VOLTAGE_ADC_ADDRESS
         return {
-            "48V": (
-                self.voltage_channels[0].voltage
-                * SCALAR_48V
-            ),
-
-            "12V_LEFT": (
-                self.voltage_channels[1].voltage
-                * SCALAR_12V
-            ),
-
-            "12V_RIGHT": (
-                self.voltage_channels[2].voltage
-                * SCALAR_12V
-            ),
-
-            "3V3": (
-                self.voltage_channels[3].voltage
-                * SCALAR_3V3
-            ),
+            "48V": self._read(a, 0, SCALAR_48V),
+            "12V_LEFT": self._read(a, 1, SCALAR_12V),
+            "12V_RIGHT": self._read(a, 2, SCALAR_12V),
+            "3V3": self._read(a, 3, SCALAR_3V3),
         }
-
-    # Current Readings
 
     def read_thruster_currents(self):
-
-
-        # ESC Arrangments:
-        #
-        #       1       2
-        #       5       6
-        #       7       8
-        #       3       4
-
-
-
-        
-        # ADS 0x48:
-        # A0 - Thruster 1
-        # A1 - Thruster 5
-        # A2 - Thruster 7
-        # A3 - Thruster 3
-
-        # ADS 0x49:
-        # A0 - Thruster 2
-        # A1 - Thruster 6
-        # A2 - Thruster 8
-        # A3 - Thruster 4
-
+        # 0x48: A0=1, A1=5, A2=7, A3=3
+        # 0x49: A0=2, A1=6, A2=8, A3=4
+        left = LEFT_THRUSTER_ADC_ADDRESS
+        right = RIGHT_THRUSTER_ADC_ADDRESS
         return {
-            1: self.left_channels[0].voltage * SCALAR_CURRENT,
-            2: self.right_channels[0].voltage * SCALAR_CURRENT,
-
-            3: self.left_channels[3].voltage * SCALAR_CURRENT,
-            4: self.right_channels[3].voltage * SCALAR_CURRENT,
-
-            5: self.left_channels[1].voltage * SCALAR_CURRENT,
-            6: self.right_channels[1].voltage * SCALAR_CURRENT,
-
-            7: self.left_channels[2].voltage * SCALAR_CURRENT,
-            8: self.right_channels[2].voltage * SCALAR_CURRENT,
+            1: self._read(left, 0, SCALAR_CURRENT),
+            2: self._read(right, 0, SCALAR_CURRENT),
+            3: self._read(left, 3, SCALAR_CURRENT),
+            4: self._read(right, 3, SCALAR_CURRENT),
+            5: self._read(left, 1, SCALAR_CURRENT),
+            6: self._read(right, 1, SCALAR_CURRENT),
+            7: self._read(left, 2, SCALAR_CURRENT),
+            8: self._read(right, 2, SCALAR_CURRENT),
         }
+
+    def close(self):
+        if self.i2c is not None:
+            self.i2c.deinit()
+
+
+def format_reading(value, decimals=3, width=7):
+    return f"{value:{width}.{decimals}f}" if value is not None else f"{'N/A':>{width}}"
 
 
 # GPIO Setup
@@ -304,10 +277,10 @@ def draw_screen(
         voltage_error = str(e)
 
         voltages = {
-            "48V": 0,
-            "12V_LEFT": 0,
-            "12V_RIGHT": 0,
-            "3V3": 0,
+            "48V": None,
+            "12V_LEFT": None,
+            "12V_RIGHT": None,
+            "3V3": None,
         }
 
     try:
@@ -318,7 +291,7 @@ def draw_screen(
         current_error = str(e)
 
         currents = {
-            i: 0
+            i: None
             for i in range(1, 9)
         }
 
@@ -353,7 +326,7 @@ def draw_screen(
 
         "",
 
-        f"3.3V Bus : {voltages['3V3']:6.3f} V",
+        f"3.3V Bus : {format_reading(voltages['3V3'], 3, 7)} V",
         f"5V Bus   : SuperHAT sensing not configured",
         f"12V Bus  : SuperHAT sensing not configured",
 
@@ -370,26 +343,26 @@ def draw_screen(
 
         "Power Rails:",
 
-        f"48V       : {voltages['48V']:7.3f} V",
-        f"12V Left  : {voltages['12V_LEFT']:7.3f} V",
-        f"12V Right : {voltages['12V_RIGHT']:7.3f} V",
-        f"3.3V      : {voltages['3V3']:7.3f} V",
+        f"48V       : {format_reading(voltages['48V'], 3, 7)} V",
+        f"12V Left  : {format_reading(voltages['12V_LEFT'], 3, 7)} V",
+        f"12V Right : {format_reading(voltages['12V_RIGHT'], 3, 7)} V",
+        f"3.3V      : {format_reading(voltages['3V3'], 3, 7)} V",
 
         "",
 
         "Thruster Current:",
 
-        f"Thruster 1 : {currents[1]:6.2f} A      "
-        f"Thruster 2 : {currents[2]:6.2f} A",
+        f"Thruster 1 : {format_reading(currents[1], 2, 6)} A      "
+        f"Thruster 2 : {format_reading(currents[2], 2, 6)} A",
 
-        f"Thruster 5 : {currents[5]:6.2f} A      "
-        f"Thruster 6 : {currents[6]:6.2f} A",
+        f"Thruster 5 : {format_reading(currents[5], 2, 6)} A      "
+        f"Thruster 6 : {format_reading(currents[6], 2, 6)} A",
 
-        f"Thruster 7 : {currents[7]:6.2f} A      "
-        f"Thruster 8 : {currents[8]:6.2f} A",
+        f"Thruster 7 : {format_reading(currents[7], 2, 6)} A      "
+        f"Thruster 8 : {format_reading(currents[8], 2, 6)} A",
 
-        f"Thruster 3 : {currents[3]:6.2f} A      "
-        f"Thruster 4 : {currents[4]:6.2f} A",
+        f"Thruster 3 : {format_reading(currents[3], 2, 6)} A      "
+        f"Thruster 4 : {format_reading(currents[4], 2, 6)} A",
 
         "",
 
@@ -458,6 +431,12 @@ def draw_screen(
             "POWERBOARD CURRENT ERROR:",
             current_error,
         ]
+
+    lines += ["", "I2C ADC Status:"]
+    for address in (VOLTAGE_ADC_ADDRESS, LEFT_THRUSTER_ADC_ADDRESS,
+                    RIGHT_THRUSTER_ADC_ADDRESS):
+        state = "CONNECTED" if powerboard.channels[address] is not None else "N/A (offline)"
+        lines.append(f"0x{address:02X}: {state}")
 
     for y, line in enumerate(lines):
         write_line(stdscr, y, line)
@@ -609,6 +588,7 @@ def main(stdscr):
     finally:
 
         reset_outputs(hw)
+        powerboard.close()
 
         for device in hw.values():
 
